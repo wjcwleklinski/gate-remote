@@ -1,0 +1,23 @@
+[Unit]
+Description=Gate Remote — GPIO gate opener with a Keycloak-protected endpoint
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=gate-remote
+SupplementaryGroups=gpio
+EnvironmentFile=/etc/gate-remote/gate-remote.env
+WorkingDirectory=/opt/gate-remote
+
+# One worker on purpose — the rate-limit counters live in the process, and a
+# second worker would quietly allow a second full quota.
+ExecStart=/opt/gate-remote/venv/bin/uvicorn main:app --host 0.0.0.0 --port 8080 --workers 1
+
+Restart=always
+RestartSec=2
+
+# Creates /var/lib/gate-remote owned by the service user, for the JWKS cache.
+StateDirectory=gate-remote
+
+[Install]
+WantedBy=multi-user.target

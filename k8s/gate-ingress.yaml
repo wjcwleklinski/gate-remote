@@ -1,0 +1,88 @@
+# Routes gate.wleklinski.org to the Raspberry Pi, which is NOT part of the
+# cluster. A Service with no selector plus a hand-written EndpointSlice is how
+# you point kube-proxy and nginx-ingress at an address outside the cluster.
+#
+# Traffic path:
+#   phone → Cloudflare → tunnel → nginx-ingress → 192.168.0.20:8080
+#
+# Nothing here needs to change when main.py changes.
+#
+#   kubectl apply -f gate-ingress.yaml
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: gate-remote
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gate-remote
+  namespace: gate-remote
+spec:
+  # No selector: there is no pod behind this. The EndpointSlice below supplies
+  # the address by hand, and Kubernetes leaves it alone.
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
+      protocol: TCP
+---
+apiVersion: discovery.k8s.io/v1
+kind: EndpointSlice
+metadata:
+  name: gate-remote-pi
+  namespace: gate-remote
+  labels:
+    # This label is what binds the slice to the Service above.
+    kubernetes.io/service-name: gate-remote
+addressType: IPv4
+ports:
+  # The name must match the Service port name, or nothing is routed.
+  - name: http
+    port: 8080
+    protocol: TCP
+endpoints:
+  - addresses:
+      # ← The Pi's static LAN address. Set this to yours. It must be outside
+      #   the router's DHCP pool and outside the MetalLB range (.100–.120).
+      - "192.168.0.20"
+    conditions:
+      ready: true
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: gate-remote
+  namespace: gate-remote
+  annotations:
+    # Cloudflare terminates TLS, so nginx sees plain HTTP. Without this it
+    # redirects to HTTPS and the request loops.
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    # Defence in depth in front of the Pi's own rate limiting — this one is
+    # per source IP, at the edge of the cluster.
+    nginx.ingress.kubernetes.io/limit-rpm: "20"
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "5"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "15"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: gate.wleklinski.org
+      http:
+        paths:
+          # Only these two paths are routed. Anything else the app might ever
+          # serve — /docs, /openapi.json — is not reachable from the internet.
+          - path: /trigger
+            pathType: Exact
+            backend:
+              service:
+                name: gate-remote
+                port:
+                  number: 80
+          - path: /healthz
+            pathType: Exact
+            backend:
+              service:
+                name: gate-remote
+                port:
+                  number: 80
